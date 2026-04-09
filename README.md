@@ -263,3 +263,8 @@ The key architectural direction in this repo is:
 ## Feedback
 
 If you are hacking on this locally and want the full internal architecture details, read [AGENTS.md](AGENTS.md).
+
+## Design Docs
+
+- [Collaborative UI Architecture Plan](docs/collaborative-ui-architecture.md)
+- [OpenAI Path Correction Plan](docs/openai-path-correction-plan.md)

@@ -1,0 +1,204 @@
+Goal (incl. success criteria):
+- Review Clicky's external service dependencies and identify realistic replacements for Cloudflare Worker, Anthropic vision/chat, AssemblyAI STT, and ElevenLabs TTS.
+- Success means documenting which dependencies are architectural requirements versus implementation choices, and outlining feasible paths using OpenAI/OpenRouter and optional self-hosted models.
+- Review how Clicky can evolve into a collaborative UI learning and review companion where the human and AI share selection, annotations, and proposal state over live UI flows.
+- Success means documenting the architecture, producing flow diagrams, and defining a phased implementation plan that fits the existing codebase without prematurely committing to CRDT sync.
+
+Constraints/Assumptions:
+- Do not run `xcodebuild` from the terminal.
+- User has OpenAI and OpenRouter keys.
+- User has `labctl`/iximiuz VMs available for self-hosted services.
+- Current review is based on the checked-out local code plus targeted current-provider validation as needed.
+- CLI compilation/testing should go through the generated `xcode-makefiles` wrapper, not direct `xcodebuild`.
+- The current collaborative UI work is architecture and documentation focused; no runtime implementation has been started yet in this phase.
+
+Key decisions:
+- Entered continuity mode because this is a multi-step architecture review with likely follow-up turns.
+- Treat Cloudflare Worker as replaceable infrastructure, not a product requirement.
+- Direction chosen: propose a Peekaboo-style refactor plan centered on native macOS tools first, vision second.
+- Use a namespaced `xcode-makefiles` install (`Makefile.clickycli`) for terminal validation so repo-level scripts stay untouched.
+- Keep CLI validation unsigned (`CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`) and disable warnings-as-errors for this repo's current dependency graph when using `Makefile.clickycli`.
+- Make local testing viable without the worker by reading config from environment variables, using direct OpenAI chat when the worker chat route is absent, and falling back to system TTS when ElevenLabs is unavailable.
+- Add a no-Xcode DMG packaging path on top of the namespaced CLI build flow.
+- Add a direct install target so the built app bundle can be copied into an install directory without going through a DMG mount step.
+- For collaborative UI, do not model the external app UI itself as the shared document. Model it as an observed world and introduce a separate local collaboration session layered on top.
+- For collaborative UI, do not go CRDT-first. First define local semantic anchors, artifact types, and session operations; only replicate persistent artifacts later if multi-user or multi-device sync becomes necessary.
+- Split collaboration state into ephemeral guidance artifacts and persistent review artifacts so transient pointing does not pollute saved review history.
+- The next architectural seam is a dedicated `CollaborationSessionStore`, not more state inside `CompanionManager`.
+- Document the collaborative UI design in-repo under `docs/` so the plan is durable and reviewable instead of living only in thread history.
+
+State:
+- `CONTINUITY.md` did not exist at start of review; created now.
+- Local inspection completed for current provider seams in the app and worker.
+- Current-provider validation completed for Anthropic auth and CUA alternatives using official docs and primary project repos.
+- Cost-analysis inputs gathered from local code: screen captures are downscaled to max dimension 1280 with JPEG compression 0.8, companion prompt is ~1112 tokens, conversation history keeps up to 10 exchanges.
+- Phase 1 provider seams have been implemented in code: chat provider abstraction, grounding types/coordinator, and prompt-tag grounding provider.
+- Phase 2 native macOS grounding has been implemented in code: read-only automation snapshots, native grounding provider, and native-first coordinator ordering.
+- Phase 3 OpenAI computer-use grounding has been implemented in code as a fallback provider after native grounding.
+- `CompanionManager` now uses the new chat and grounding seams for both the main voice flow and the onboarding demo path.
+- `xcode-makefiles` tooling is installed locally as `Makefile.clickycli` plus `scripts/clickycli/`.
+- CLI build succeeds through `clickycli-build`.
+- CLI test through `clickycli-test` fails in the existing UI-test harness, not in app compilation.
+- The app now supports local OpenAI-only development when launched with environment variables or bundle keys:
+  - `OPENAI_API_KEY` / `OpenAIAPIKey`
+  - optional `CLICKY_VOICE_TRANSCRIPTION_PROVIDER=openai`
+- The app now auto-falls back to:
+  - direct OpenAI chat if the worker base URL is not configured
+  - direct OpenAI transcription if selected and configured
+  - system speech synthesis if ElevenLabs is unavailable
+- The checked-in `Info.plist` now defaults `VoiceTranscriptionProvider` to `openai` and sets `OpenAITranscriptionModel` to `gpt-4o-transcribe`.
+- The checked-in `Info.plist` now keeps `OpenAIAPIKey` empty. Local-only testing can still embed a key there outside git if needed for Finder or DMG launches.
+- The namespaced makefile now supports `clickycli-dmg`, which builds the app and packages a DMG under `build/dist/<agent>/`.
+- The namespaced makefile now supports `clickycli-install`, which builds the app and copies it into an install directory (default `~/Applications`).
+- The provider refactor, OpenAI local runtime path, and CLI packaging/install flow have been committed and pushed on `main` as `e94b857` (`Refactor Clicky providers and add local packaging flow`).
+- A second architecture review pass is now complete for collaborative UI workflows, anchored in the existing grounding, automation, and overlay code.
+- The recommended collaborative UI direction is a local shared session with semantic `UIAnchor` values, typed collaboration artifacts, and a future optional sync layer for persistent artifacts only.
+- The collaborative UI design has been documented in `docs/collaborative-ui-architecture.md` with architecture diagrams, flow diagrams, and a phased implementation plan.
+- A follow-up Oracle review is complete for commit `e94b857`, comparing the current OpenAI/provider refactor to the original Claude-based path.
+- The OpenAI/provider direction is still considered correct overall, but three follow-up fixes are now considered necessary: point-tag precedence, non-blocking computer-use fallback, and explicit provider selection.
+- A concrete correction plan for those three fixes has been documented in `docs/openai-path-correction-plan.md`.
+- `README.md` now links to the new design doc under a `Design Docs` section.
+- No runtime implementation has been started yet for the collaborative UI plan; the work completed in this pass is review and documentation only.
+- Current uncommitted workspace state includes the new `docs/` folder, the updated `README.md`, and this `CONTINUITY.md` update.
+
+Done:
+- Confirmed proxy routes in `worker/src/index.ts`: `/chat`, `/tts`, `/transcribe-token`.
+- Confirmed app currently hardcodes worker base URL in `CompanionManager.swift`.
+- Confirmed AssemblyAI streaming path depends on a token-minting endpoint, while OpenAI STT bypasses the worker and calls OpenAI directly.
+- Confirmed chat and TTS layers are not yet provider-abstracted like STT.
+- Confirmed element-pointing accuracy has an Anthropic-specific dependency via Computer Use in `ElementLocationDetector.swift`.
+- Confirmed `ElementLocationDetector.swift` is not currently wired into the main `CompanionManager` response path; the active pointing flow mostly relies on model-emitted `[POINT:x,y:label(:screenN)]` tags.
+- Confirmed Anthropic API auth is API-key based (`x-api-key`), not OAuth, in official docs and in the current worker implementation.
+- Confirmed the closest hosted Anthropic CUA alternative is OpenAI's computer-use tool in the Responses API.
+- Identified plausible open/self-hosted GUI-agent alternatives: UI-TARS, ShowUI, OmniParser-based stacks, and browser-use/macOS-use.
+- Reviewed `steipete/Peekaboo` as a macOS-native automation stack with screenshot capture, menu/menubar discovery, click/type/scroll/window/app/space tools, MCP support, and multi-provider model support including OpenAI and local Ollama.
+- Reviewed `steipete/macos-automator-mcp` as a more script-oriented macOS automation MCP with AppleScript/JXA plus accessibility querying/action support.
+- Quantified rough Claude request cost ranges from the current code shape:
+  - Sonnet, 1 screen, warm history: ~3407 input tokens + ~100 output tokens ≈ $0.0117/request.
+  - Sonnet, 2 screens, warm history: ~4772 input tokens + ~100 output tokens ≈ $0.0158/request.
+  - Opus 4.6 on OpenRouter, 2 screens, warm history: same token shape ≈ $0.0264/request.
+- Quantified day-testing rough order:
+  - ~50 interactions/day on Sonnet with 2 screens + AssemblyAI + ElevenLabs starter overage pricing ≈ ~$1.82/day.
+  - Same interaction shape on OpenRouter Opus 4.6 ≈ ~$2.35/day.
+- Identified ElevenLabs TTS as the likely dominant marginal cost during casual testing once response speech is enabled; AssemblyAI STT is comparatively negligible.
+- Implemented Phase 1 scaffolding in new provider files under `leanring-buddy/Providers/` and rewired `CompanionManager` to use the new chat and grounding seams.
+- Removed direct point-tag parsing from `CompanionManager`; parsing now lives in `PointTagGroundingProvider`.
+- Added a native AX-backed automation provider and a native grounding provider that scores focused elements and menu items before falling back to point tags.
+- Changed grounding requests to include both the user transcript and assistant response text so native grounding can use both signals.
+- Verified the new seam files typecheck with `swiftc -typecheck` when module caches are redirected into `/tmp`.
+- Added an OpenAI computer-use fallback provider that inspects `computer_call` output for click-like coordinates but does not execute actions.
+- Updated `AGENTS.md` to reflect the new provider split and grounding ordering.
+- Installed the `xcode-makefiles` skill output under a `clickycli` namespace.
+- Patched `Makefile.clickycli` so macOS CLI builds/tests are unsigned and can optionally disable warnings-as-errors with `TREAT_WARNINGS_AS_ERRORS=NO`.
+- Verified `AGENT_NAME=codex make -f Makefile.clickycli clickycli-diagnose` succeeds and reports the expected project/scheme/platform.
+- Verified `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-build` succeeds.
+- Verified `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-test` compiles the app and UI-test runner, then fails after ~332s because `leanring-buddyUITests-Runner` hangs before establishing connection.
+- Confirmed the project contains a real `leanring-buddyTests` target, but the current scheme/test plan exposed to `xcodebuild test` does not include it.
+- Updated `AGENTS.md` again to document `Makefile.clickycli` / `scripts/clickycli/xcbuild.sh` and the CLI validation commands.
+- Added env-variable support in `AppBundleConfiguration` for local testing.
+- Added `OpenAIChatProvider` and `SystemTTSClient`.
+- Made AssemblyAI configuration-aware so the app can fall back cleanly when the worker token route is not configured.
+- Updated the panel so it shows an assistant label instead of the Claude-only model toggle when OpenAI chat is active.
+- Verified `OPENAI_API_KEY` is present in the current shell environment.
+- Verified the OpenAI key works with a direct smoke request to `GET /v1/models` returning HTTP 200.
+- Re-ran `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-build` after the local-testing changes; build succeeds.
+- Updated `AGENTS.md` to document the new OpenAI local-testing path.
+- Wired the checked-in Xcode plist defaults to OpenAI transcription and re-ran the CLI build successfully afterward.
+- Temporarily injected the current `OPENAI_API_KEY` into `leanring-buddy/Info.plist` for local testing, then removed it again before commit so the tracked repo remains secret-free.
+- Added `scripts/clickycli/create_dmg.sh` and `scripts/clickycli/resolve_built_app_path.sh`.
+- Updated `Makefile.clickycli` so `clickycli-dmg` resolves the actual built app bundle name (`Clicky.app`) before packaging.
+- Verified `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg` succeeds and produces `build/dist/codex/leanring-buddy-Debug.dmg`.
+- Updated `README.md` and `AGENTS.md` with the no-Xcode DMG flow and release variant command.
+- Added `scripts/clickycli/install_app_bundle.sh` and a `clickycli-install` target.
+- Verified `AGENT_NAME=codex INSTALL_DIR=$(pwd)/build/install/codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install` succeeds and produces `build/install/codex/Clicky.app`.
+- Updated `README.md` and `AGENTS.md` with the direct install flow.
+- Committed the staged project changes as `e94b857 Refactor Clicky providers and add local packaging flow`.
+- Pushed `main` to `origin/main` successfully (`5884b7a..e94b857`).
+- Reviewed the current Clicky interaction loop as a UI-learning companion: push-to-talk, multi-screen capture, assistant response, grounding, and overlay cursor guidance.
+- Compared the current architecture to collaborative text/editor patterns from `EveryInc/proof-sdk` and Electric SQL's Yjs post to identify which abstractions transfer and which do not.
+- Concluded that the transferable abstraction is a shared collaboration session over semantic anchors and artifacts, not a CRDT over the external UI itself.
+- Defined the recommended future core types conceptually: `UIAnchor`, collaboration artifacts, and collaboration operations such as selection, annotation, proposal, accept, and reject.
+- Defined the architectural split between ephemeral artifacts like pointer flights and persistent artifacts like saved notes and review proposals.
+- Wrote `docs/collaborative-ui-architecture.md` covering the product direction, current architecture, target architecture, core layers, risks, and phased implementation plan.
+- Added Mermaid diagrams for the current Clicky loop, the target collaboration architecture, voice-guidance flow, annotation flow, AI review flow, and a future shared-sync flow.
+- Added `docs/README.md` and linked the collaborative UI architecture doc from `README.md`.
+- Did not run build or test commands for the collaborative UI review pass because the work in this phase is documentation-only.
+- Reviewed commit `e94b857` against the original Claude-based architecture and confirmed the provider-based refactor should be kept rather than reverted.
+- Identified the main regression risk in the current OpenAI path: explicit `[POINT:...]` assistant output is no longer authoritative because native and computer-use grounding run first.
+- Identified the main UX risk in the current OpenAI path: computer-use fallback can sit on the critical path before TTS and increase response latency.
+- Identified the main architecture-cleanup gap in the current OpenAI path: provider selection and model state are still partly Claude-shaped inside `CompanionManager`.
+- Wrote `docs/openai-path-correction-plan.md` with the three-fix patch plan, file-level change targets, ordering, and verification criteria.
+- Updated `docs/README.md` and `README.md` to link the OpenAI correction plan.
+
+Now:
+- `origin/main` now contains the provider refactor, OpenAI local-testing path, and no-Xcode packaging/install flow.
+- The provider refactor compiles through the CLI build path.
+- The app can now be launched outside Xcode via the generated DMG or direct install target.
+- Remaining validation gap is project-level test wiring: the shared CLI test action only runs boilerplate UI tests, and that runner hangs for this menu bar app.
+- The collaborative UI architecture review is documented locally in `docs/collaborative-ui-architecture.md`.
+- The OpenAI/provider correction plan is documented locally in `docs/openai-path-correction-plan.md`.
+- The recommended next implementation step is Phase 1: add a local collaboration session, semantic anchors, and overlay-backed artifacts without introducing sync yet.
+- The current workspace includes uncommitted documentation changes for the collaborative UI plan.
+
+Next:
+- If the user wants full green CLI tests, fix the scheme/test-plan wiring so `leanring-buddyTests` is runnable and/or exclude the default UI-test bundle from automated CLI validation.
+- If the user still wants Finder or DMG launches without env setup, add a local-only key injection step outside git rather than tracking a secret in `Info.plist`.
+- If the user wants to continue on the provider refactor before collaborative UI runtime work, implement the three-fix patch plan in this order:
+  - Fix 1: make explicit point tags authoritative
+  - Fix 2: make OpenAI computer-use grounding best-effort instead of speech-blocking
+  - Fix 3: make provider selection explicit and provider-neutral
+- Implement Phase 1 of the collaborative UI plan:
+  - add `UIAnchor`
+  - add collaboration artifact models
+  - add `CollaborationSessionStore`
+  - extend grounding results to include anchor metadata
+  - generalize the overlay from a single target animation to rendering session-backed artifacts
+- After Phase 1, choose the first vertical slice for user-visible behavior, most likely one of:
+  - "leave a note here"
+  - "review this flow"
+  - shared AI selection halo during spoken guidance
+- Once the artifact model proves useful locally, decide whether Phase 2 should prioritize persistent annotations or AI proposal/review workflow.
+
+Open questions (UNCONFIRMED if needed):
+- UNCONFIRMED whether the user wants to preserve streaming response text/audio latency targets close to current Anthropic/AssemblyAI/ElevenLabs behavior.
+- UNCONFIRMED whether local/self-hosted models need to support the same `[POINT:x,y:label:screenN]` behavior, or if that feature can degrade gracefully.
+- UNCONFIRMED whether the user wants the repo changed so CLI `test` runs only unit tests, or whether documenting the current UI-test limitation is sufficient.
+- UNCONFIRMED whether the user wants the default checked-in `Info.plist` to switch from `assemblyai` to `openai`, or whether env-based local testing is sufficient.
+- UNCONFIRMED whether the three-fix OpenAI/provider correction plan should land before any collaborative UI runtime work.
+- UNCONFIRMED which collaborative UI vertical slice should ship first: pinned annotations, AI review proposals, or shared transient selection.
+- UNCONFIRMED whether persistent collaboration artifacts should initially live only in local app storage or in a repo-visible serialized format.
+- UNCONFIRMED whether Oracle should participate only as a planning/review agent or eventually as a first-class artifact-writing peer alongside Clicky.
+- UNCONFIRMED whether future collaboration needs multi-user sync at all, or whether single-user human-plus-AI collaboration is the primary product target.
+
+Working set (files/ids/commands):
+- `/Users/manik/Github/clicky/worker/src/index.ts`
+- `/Users/manik/Github/clicky/leanring-buddy/CompanionManager.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/ClaudeAPI.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/OpenAIAPI.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/BuddyTranscriptionProvider.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/OpenAIAudioTranscriptionProvider.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/AssemblyAIStreamingTranscriptionProvider.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/ElementLocationDetector.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/ElevenLabsTTSClient.swift`
+- `/Users/manik/Github/clicky/Makefile.clickycli`
+- `/Users/manik/Github/clicky/scripts/clickycli/xcbuild.sh`
+- `/Users/manik/Github/clicky/scripts/clickycli/create_dmg.sh`
+- `/Users/manik/Github/clicky/scripts/clickycli/install_app_bundle.sh`
+- `/Users/manik/Github/clicky/scripts/clickycli/resolve_built_app_path.sh`
+- `/Users/manik/Github/clicky/leanring-buddy/Providers/Chat/OpenAIChatProvider.swift`
+- `/Users/manik/Github/clicky/leanring-buddy/SystemTTSClient.swift`
+- `/Users/manik/Github/clicky/docs/collaborative-ui-architecture.md`
+- `/Users/manik/Github/clicky/docs/openai-path-correction-plan.md`
+- `/Users/manik/Github/clicky/docs/README.md`
+- `/Users/manik/Github/clicky/README.md`
+- `/Users/manik/Github/clicky/CONTINUITY.md`
+- `AGENT_NAME=codex make -f Makefile.clickycli clickycli-diagnose`
+- `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-build`
+- `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg`
+- `AGENT_NAME=codex INSTALL_DIR=$(pwd)/build/install/codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install`
+- `AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-test`
+- `curl -sS -o /tmp/clicky_openai_models.json -w '%{http_code}' https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
+- `build/logs/codex/build.log`
+- `build/logs/codex/build.xcresult`
+- `build/logs/codex/test.log`
+- `build/logs/codex/test.xcresult`
