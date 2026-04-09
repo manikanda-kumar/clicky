@@ -1,0 +1,202 @@
+APP_NAME := leanring-buddy
+APP_PROJECT := leanring-buddy.xcodeproj
+APP_WORKSPACE := leanring-buddy.xcworkspace
+APP_SCHEME ?= leanring-buddy
+APP_PLATFORM := macos
+APP_GENERATOR := xcodegen
+CONFIGURATION ?= Debug
+SIM_NAME ?= 
+TARGET_PREFIX := clickycli-
+SCRIPTS_DIR := ./scripts/clickycli
+TREAT_WARNINGS_AS_ERRORS ?= YES
+
+WORKSPACE ?= $(firstword $(wildcard *.xcworkspace))
+PROJECT ?= $(firstword $(wildcard *.xcodeproj))
+ifeq ($(strip $(PROJECT)),)
+PROJECT := $(APP_PROJECT)
+endif
+
+ifeq ($(strip $(WORKSPACE)),)
+BUILD_FILE_FLAG := -project $(PROJECT)
+else
+BUILD_FILE_FLAG := -workspace $(WORKSPACE)
+endif
+
+ifeq ($(TARGET_PREFIX),)
+.DEFAULT_GOAL := build-and-run
+endif
+
+XCBUILD := $(SCRIPTS_DIR)/xcbuild.sh
+
+ifeq ($(TREAT_WARNINGS_AS_ERRORS),YES)
+XCODE_WARNING_SETTINGS := GCC_TREAT_WARNINGS_AS_ERRORS=YES SWIFT_TREAT_WARNINGS_AS_ERRORS=YES
+else
+XCODE_WARNING_SETTINGS := GCC_TREAT_WARNINGS_AS_ERRORS=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=NO
+endif
+
+ifeq ($(origin AGENT_NAME), undefined)
+AGENT_NAME := $(shell $(SCRIPTS_DIR)/resolve_agent_name.sh)
+endif
+
+DERIVED_BASE := build/DerivedData
+DERIVED := $(DERIVED_BASE)/$(AGENT_NAME)
+LOG_DIR := build/logs/$(AGENT_NAME)
+CACHE_ROOT := $(CURDIR)/build/cache/$(AGENT_NAME)
+TMPDIR_PATH := $(CURDIR)/build/tmp/$(AGENT_NAME)
+DIST_DIR := build/dist/$(AGENT_NAME)
+DMG_PATH := $(DIST_DIR)/$(APP_SCHEME)-$(CONFIGURATION).dmg
+DMG_VOLUME_NAME ?= Clicky
+INSTALL_DIR ?= $(HOME)/Applications
+
+ifeq ($(APP_PLATFORM),ios)
+PLATFORM_SUFFIX := -iphonesimulator
+else
+PLATFORM_SUFFIX :=
+DESTINATION := platform=macOS,arch=arm64
+endif
+
+BUILD_PRODUCTS := $(DERIVED)/Build/Products/$(CONFIGURATION)$(PLATFORM_SUFFIX)
+APP_PATH_FALLBACK := $(BUILD_PRODUCTS)/$(APP_SCHEME).app
+PREFERRED_APP_BUNDLE_NAME ?= Clicky
+
+PHONY_TARGETS := $(TARGET_PREFIX)help $(TARGET_PREFIX)diagnose $(TARGET_PREFIX)build \
+	$(TARGET_PREFIX)test $(TARGET_PREFIX)run $(TARGET_PREFIX)dmg $(TARGET_PREFIX)install $(TARGET_PREFIX)build-and-run \
+	$(TARGET_PREFIX)build-and-run-background $(TARGET_PREFIX)clean $(TARGET_PREFIX)agent-verify
+.PHONY: $(PHONY_TARGETS)
+
+$(TARGET_PREFIX)help:
+	@printf "%s\n" \
+		"Targets:" \
+		"  make $(TARGET_PREFIX)build                    Build with strict flags + logs" \
+		"  make $(TARGET_PREFIX)diagnose                 Print toolchain + config info" \
+		"  make $(TARGET_PREFIX)dmg                      Build and package a DMG" \
+		"  make $(TARGET_PREFIX)install                  Build and install the app bundle" \
+		"  make $(TARGET_PREFIX)test                     Run unit tests" \
+		"  make $(TARGET_PREFIX)run                      Run app (assumes prior build)" \
+		"  make $(TARGET_PREFIX)build-and-run            Build then run" \
+		"  make $(TARGET_PREFIX)build-and-run-background Build then run in background" \
+		"  make $(TARGET_PREFIX)clean                    Clean derived data + logs" \
+		"  make $(TARGET_PREFIX)agent-verify             Build and test"
+
+$(TARGET_PREFIX)diagnose:
+ifeq ($(APP_PLATFORM),ios)
+	@APP_PROJECT="$(PROJECT)" \
+		APP_WORKSPACE="$(WORKSPACE)" \
+		APP_BUILD_FILE="$$( [ -n "$(WORKSPACE)" ] && printf "%s" "$(WORKSPACE)" || printf "%s" "$(PROJECT)" )" \
+		APP_SCHEME="$(APP_SCHEME)" \
+		APP_PLATFORM="$(APP_PLATFORM)" \
+		APP_GENERATOR="$(APP_GENERATOR)" \
+		APP_DESTINATION="$$( $(SCRIPTS_DIR)/resolve_sim_destination.sh --sim-name "$(SIM_NAME)" 2>/dev/null || true)" \
+		AGENT_NAME="$(AGENT_NAME)" \
+		CACHE_ROOT="$(CACHE_ROOT)" \
+		TMPDIR="$(TMPDIR_PATH)" \
+		$(SCRIPTS_DIR)/diagnose.sh
+else
+	@APP_PROJECT="$(PROJECT)" \
+		APP_WORKSPACE="$(WORKSPACE)" \
+		APP_BUILD_FILE="$$( [ -n "$(WORKSPACE)" ] && printf "%s" "$(WORKSPACE)" || printf "%s" "$(PROJECT)" )" \
+		APP_SCHEME="$(APP_SCHEME)" \
+		APP_PLATFORM="$(APP_PLATFORM)" \
+		APP_GENERATOR="$(APP_GENERATOR)" \
+		APP_DESTINATION="$(DESTINATION)" \
+		AGENT_NAME="$(AGENT_NAME)" \
+		CACHE_ROOT="$(CACHE_ROOT)" \
+		TMPDIR="$(TMPDIR_PATH)" \
+		$(SCRIPTS_DIR)/diagnose.sh
+endif
+
+$(TARGET_PREFIX)build:
+ifeq ($(APP_PLATFORM),ios)
+	@DESTINATION="$$( $(SCRIPTS_DIR)/resolve_sim_destination.sh --sim-name "$(SIM_NAME)")"; \
+	if [ -z "$$DESTINATION" ]; then echo "No iOS Simulator found."; exit 1; fi; \
+	LOG_DIR="$(LOG_DIR)" CACHE_ROOT="$(CACHE_ROOT)" TMPDIR="$(TMPDIR_PATH)" $(XCBUILD) --label "$(AGENT_NAME)" --action build -- \
+		$(BUILD_FILE_FLAG) \
+		-scheme $(APP_SCHEME) \
+		-configuration $(CONFIGURATION) \
+		-destination "$$DESTINATION" \
+		-derivedDataPath $(DERIVED) \
+		$(XCODE_WARNING_SETTINGS) \
+		SWIFT_STRICT_CONCURRENCY=complete \
+		build
+else
+	@LOG_DIR="$(LOG_DIR)" CACHE_ROOT="$(CACHE_ROOT)" TMPDIR="$(TMPDIR_PATH)" $(XCBUILD) --label "$(AGENT_NAME)" --action build -- \
+		$(BUILD_FILE_FLAG) \
+		-scheme $(APP_SCHEME) \
+		-configuration $(CONFIGURATION) \
+		-destination '$(DESTINATION)' \
+		-derivedDataPath $(DERIVED) \
+		$(XCODE_WARNING_SETTINGS) \
+		SWIFT_STRICT_CONCURRENCY=complete \
+		CODE_SIGNING_ALLOWED=NO \
+		CODE_SIGNING_REQUIRED=NO \
+		CODE_SIGN_IDENTITY="" \
+		build
+endif
+
+$(TARGET_PREFIX)test:
+ifeq ($(APP_PLATFORM),ios)
+	@DESTINATION="$$( $(SCRIPTS_DIR)/resolve_sim_destination.sh --sim-name "$(SIM_NAME)")"; \
+	if [ -z "$$DESTINATION" ]; then echo "No iOS Simulator found."; exit 1; fi; \
+	LOG_DIR="$(LOG_DIR)" CACHE_ROOT="$(CACHE_ROOT)" TMPDIR="$(TMPDIR_PATH)" $(XCBUILD) --label "$(AGENT_NAME)" --action test -- \
+		$(BUILD_FILE_FLAG) \
+		-scheme $(APP_SCHEME) \
+		-configuration $(CONFIGURATION) \
+		-destination "$$DESTINATION" \
+		-derivedDataPath $(DERIVED) \
+		$(XCODE_WARNING_SETTINGS) \
+		SWIFT_STRICT_CONCURRENCY=complete \
+		test
+else
+	@LOG_DIR="$(LOG_DIR)" CACHE_ROOT="$(CACHE_ROOT)" TMPDIR="$(TMPDIR_PATH)" $(XCBUILD) --label "$(AGENT_NAME)" --action test -- \
+		$(BUILD_FILE_FLAG) \
+		-scheme $(APP_SCHEME) \
+		-configuration $(CONFIGURATION) \
+		-destination '$(DESTINATION)' \
+		-derivedDataPath $(DERIVED) \
+		$(XCODE_WARNING_SETTINGS) \
+		SWIFT_STRICT_CONCURRENCY=complete \
+		CODE_SIGNING_ALLOWED=NO \
+		CODE_SIGNING_REQUIRED=NO \
+		CODE_SIGN_IDENTITY="" \
+		test
+endif
+
+$(TARGET_PREFIX)run:
+ifeq ($(APP_PLATFORM),ios)
+	@$(SCRIPTS_DIR)/run_app_ios_sim.sh --app-path "$(APP_PATH_FALLBACK)" --sim-name "$(SIM_NAME)"
+else
+	@APP_PATH="$$( $(SCRIPTS_DIR)/resolve_built_app_path.sh --products-dir "$(BUILD_PRODUCTS)" --preferred-name "$(PREFERRED_APP_BUNDLE_NAME)" )"; \
+	$(SCRIPTS_DIR)/run_app_macos.sh --app-path "$$APP_PATH"
+endif
+
+$(TARGET_PREFIX)dmg: $(TARGET_PREFIX)build
+	@mkdir -p "$(DIST_DIR)"
+	@APP_PATH="$$( $(SCRIPTS_DIR)/resolve_built_app_path.sh --products-dir "$(BUILD_PRODUCTS)" --preferred-name "$(PREFERRED_APP_BUNDLE_NAME)" )"; \
+	$(SCRIPTS_DIR)/create_dmg.sh \
+		--app-path "$$APP_PATH" \
+		--output-path "$(DMG_PATH)" \
+		--volume-name "$(DMG_VOLUME_NAME)"
+
+$(TARGET_PREFIX)install: $(TARGET_PREFIX)build
+	@APP_PATH="$$( $(SCRIPTS_DIR)/resolve_built_app_path.sh --products-dir "$(BUILD_PRODUCTS)" --preferred-name "$(PREFERRED_APP_BUNDLE_NAME)" )"; \
+	$(SCRIPTS_DIR)/install_app_bundle.sh \
+		--app-path "$$APP_PATH" \
+		--install-dir "$(INSTALL_DIR)" \
+		--replace
+
+$(TARGET_PREFIX)build-and-run: $(TARGET_PREFIX)build $(TARGET_PREFIX)run
+
+$(TARGET_PREFIX)build-and-run-background: $(TARGET_PREFIX)build
+ifeq ($(APP_PLATFORM),ios)
+	@$(SCRIPTS_DIR)/run_app_ios_sim.sh --app-path "$(APP_PATH_FALLBACK)" --sim-name "$(SIM_NAME)" --background
+else
+	@APP_PATH="$$( $(SCRIPTS_DIR)/resolve_built_app_path.sh --products-dir "$(BUILD_PRODUCTS)" --preferred-name "$(PREFERRED_APP_BUNDLE_NAME)" )"; \
+	$(SCRIPTS_DIR)/run_app_macos.sh --app-path "$$APP_PATH" --background
+endif
+
+$(TARGET_PREFIX)clean:
+	@$(SCRIPTS_DIR)/clean.sh
+
+$(TARGET_PREFIX)agent-verify:
+	@$(MAKE) --no-print-directory $(TARGET_PREFIX)build
+	@$(MAKE) --no-print-directory $(TARGET_PREFIX)test

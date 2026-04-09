@@ -1,152 +1,265 @@
-# Hi, this is Clicky.
-It's an AI teacher that lives as a buddy next to your cursor. It can see your screen, talk to you, and even point at stuff. Kinda like having a real teacher next to you.
+# Clicky
 
-Download it [here](https://www.clicky.so/) for free.
+Clicky is a macOS menu bar companion that listens with push-to-talk, looks at your screen, answers out loud, and can point at UI elements with a cursor overlay.
 
-Here's the [original tweet](https://x.com/FarzaTV/status/2041314633978659092) that kinda blew up for a demo for more context.
+This repo currently supports two practical ways to run it:
 
-![Clicky — an ai buddy that lives on your mac](clicky-demo.gif)
+- local OpenAI-first development
+- worker-backed Claude/ElevenLabs/AssemblyAI development
 
-This is the open-source version of Clicky for those that want to hack on it, build their own features, or just see how it works under the hood.
+For your current setup, the easiest path is the local OpenAI one.
 
-## Get started with Claude Code
+## What Works Right Now
 
-The fastest way to get this running is with [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
+- The app builds successfully from the CLI with the namespaced makefile flow.
+- Local testing can run without Cloudflare if OpenAI is configured.
+- Grounding is provider-based:
+  - native macOS accessibility first
+  - OpenAI computer use fallback
+  - legacy `[POINT:x,y:label]` fallback
 
-Once you get Claude running, paste this:
+Current limitation:
 
-```
-Hi Claude.
+- the shared CLI `test` path still fails in the existing boilerplate UI-test runner for this menu bar app
+- build is green, automated UI tests are not
 
-Clone https://github.com/farzaa/clicky.git into my current directory.
+## Requirements
 
-Then read the CLAUDE.md. I want to get Clicky running locally on my Mac.
-
-Help me set up everything — the Cloudflare Worker with my own API keys, the proxy URLs, and getting it building in Xcode. Walk me through it.
-```
-
-That's it. It'll clone the repo, read the docs, and walk you through the whole setup. Once you're running you can just keep talking to it — build features, fix bugs, whatever. Go crazy.
-
-## Manual setup
-
-If you want to do it yourself, here's the deal.
-
-### Prerequisites
-
-- macOS 14.2+ (for ScreenCaptureKit)
+- macOS 14.2+
 - Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- an OpenAI API key for the local path
 
-### 1. Set up the Cloudflare Worker
+Optional, only if you want the full worker-backed stack:
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker, the Worker talks to the APIs. This way your keys never ship in the app binary.
+- Cloudflare account
+- Anthropic API key
+- AssemblyAI API key
+- ElevenLabs API key
 
-```bash
-cd worker
-npm install
-```
+## Quick Start: Local OpenAI Path
 
-Now add your secrets. Wrangler will prompt you to paste each one:
+This is the recommended way to use the current repo locally.
 
-```bash
-npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-```
-
-For the ElevenLabs voice ID, open `wrangler.toml` and set it there (it's not sensitive):
-
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
-```
-
-Deploy it:
-
-```bash
-npx wrangler deploy
-```
-
-It'll give you a URL like `https://your-worker-name.your-subdomain.workers.dev`. Copy that.
-
-### 2. Run the Worker locally (for development)
-
-If you want to test changes to the Worker without deploying:
-
-```bash
-cd worker
-npx wrangler dev
-```
-
-This starts a local server (usually `http://localhost:8787`) that behaves exactly like the deployed Worker. You'll need to create a `.dev.vars` file in the `worker/` directory with your keys:
-
-```
-ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
-```
-
-Then update the proxy URLs in the Swift code to point to `http://localhost:8787` instead of the deployed Worker URL while developing. Grep for `clicky-proxy` to find them all.
-
-### 3. Update the proxy URLs in the app
-
-The app has the Worker URL hardcoded in a few places. Search for `your-worker-name.your-subdomain.workers.dev` and replace it with your Worker URL:
-
-```bash
-grep -r "clicky-proxy" leanring-buddy/
-```
-
-You'll find it in:
-- `CompanionManager.swift` — Claude chat + ElevenLabs TTS
-- `AssemblyAIStreamingTranscriptionProvider.swift` — AssemblyAI token endpoint
-
-### 4. Open in Xcode and run
+### 1. Open the project
 
 ```bash
 open leanring-buddy.xcodeproj
 ```
 
+Yes, `leanring` is intentionally misspelled in the project name.
+
+### 2. Configure the OpenAI key
+
+The app can read the key from either:
+
+- `OPENAI_API_KEY` in the environment
+- `OpenAIAPIKey` inside `leanring-buddy/Info.plist`
+
+The checked-in `Info.plist` keeps `OpenAIAPIKey` empty. If you want Finder or DMG launches to work without shell environment inheritance, add your own local key there and keep that change out of git.
+
+If you prefer Xcode env vars instead of embedding the key:
+
+1. In Xcode, open `Product > Scheme > Edit Scheme...`
+2. Select `Run`
+3. Open the `Arguments` tab
+4. Add an environment variable:
+
+```text
+OPENAI_API_KEY=your-key-here
+```
+
+### 3. Transcription defaults to OpenAI
+
+The checked-in app bundle defaults to:
+
+```text
+VoiceTranscriptionProvider = openai
+OpenAITranscriptionModel = gpt-4o-transcribe
+```
+
+So once the OpenAI key is available, push-to-talk transcription should use OpenAI automatically.
+
+### 4. Run the app
+
 In Xcode:
-1. Select the `leanring-buddy` scheme (yes, the typo is intentional, long story)
-2. Set your signing team under Signing & Capabilities
-3. Hit **Cmd + R** to build and run
 
-The app will appear in your menu bar (not the dock). Click the icon to open the panel, grant the permissions it asks for, and you're good.
+1. select the `leanring-buddy` scheme
+2. set your signing team
+3. press `Cmd + R`
 
-### Permissions the app needs
+The app lives in the menu bar, not the Dock.
 
-- **Microphone** — for push-to-talk voice capture
-- **Accessibility** — for the global keyboard shortcut (Control + Option)
-- **Screen Recording** — for taking screenshots when you use the hotkey
-- **Screen Content** — for ScreenCaptureKit access
+### 5. Grant permissions
 
-## Architecture
+Clicky needs:
 
-If you want the full technical breakdown, read `CLAUDE.md`. But here's the short version:
+- Microphone
+- Accessibility
+- Screen Recording
+- Screen content access through ScreenCaptureKit
 
-**Menu bar app** (no dock icon) with two `NSPanel` windows — one for the control panel dropdown, one for the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker.
+Without these, push-to-talk and screen-aware behavior will not work correctly.
 
-## Project structure
+## Launch Without Xcode
 
-```
-leanring-buddy/          # Swift source (yes, the typo stays)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-CLAUDE.md                # Full architecture doc (agents read this)
+If you want a launchable app without opening Xcode, you have two options.
+
+### Option 1: Install the app bundle directly
+
+Install into a local directory inside the repo:
+
+```bash
+AGENT_NAME=codex INSTALL_DIR=$(pwd)/build/install/codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install
 ```
 
-## Contributing
+Install into your user Applications folder:
 
-PRs welcome. If you're using Claude Code, it already knows the codebase — just tell it what you want to build and point it at `CLAUDE.md`.
+```bash
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install
+```
 
-Got feedback? DM me on X [@farzatv](https://x.com/farzatv).
+By default, `clickycli-install` copies the built app into `~/Applications/Clicky.app`.
+
+### Option 2: Build a DMG
+
+Debug DMG:
+
+```bash
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg
+```
+
+Release DMG:
+
+```bash
+AGENT_NAME=codex CONFIGURATION=Release TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg
+```
+
+Artifacts:
+
+- Installed app target by default: `~/Applications/Clicky.app`
+- Example local install target: `build/install/codex/Clicky.app`
+- Debug DMG: `build/dist/codex/leanring-buddy-Debug.dmg`
+- Release DMG: `build/dist/codex/leanring-buddy-Release.dmg`
+
+What this does:
+
+- builds the app through the same CLI build flow
+- resolves the actual built app bundle path
+- either installs it directly or packages it into a DMG
+- packages the app plus an `Applications` shortcut into a DMG
+
+If you only want the built `.app` bundle without a DMG, it is placed under:
+
+- `build/DerivedData/codex/Build/Products/Debug/Clicky.app`
+- or the matching `Release` path if you build with `CONFIGURATION=Release`
+
+Because this is currently an unsigned local build, macOS may warn when you open it outside Xcode. For local testing, use Finder's `Open` action if Gatekeeper blocks a normal double-click.
+
+## How Local OpenAI Mode Behaves
+
+When the worker is not configured:
+
+- chat falls back to direct OpenAI
+- transcription uses OpenAI if selected
+- grounding can use OpenAI computer use
+- speech falls back to macOS system TTS if ElevenLabs is unavailable
+
+So for local use, OpenAI is enough to get a working development loop.
+
+## Optional: Worker-Backed Path
+
+If you want the original hosted stack instead of local OpenAI fallback, configure the Cloudflare Worker.
+
+### Worker setup
+
+```bash
+cd worker
+npm install
+npx wrangler secret put ANTHROPIC_API_KEY
+npx wrangler secret put ASSEMBLYAI_API_KEY
+npx wrangler secret put ELEVENLABS_API_KEY
+npx wrangler deploy
+```
+
+Then provide a real worker URL through either:
+
+- `WorkerBaseURL` in `Info.plist`
+- `CLICKY_WORKER_BASE_URL` in the environment
+
+If you want AssemblyAI streaming through the worker token route, also make sure:
+
+- `AssemblyAITokenProxyURL` is configured, or
+- the worker base URL points to a worker with `/transcribe-token`
+
+## CLI Build And Validation
+
+Do not run raw `xcodebuild` directly for this project. Use the generated namespaced makefile instead.
+
+```bash
+AGENT_NAME=codex make -f Makefile.clickycli clickycli-diagnose
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-build
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-test
+```
+
+Notes:
+
+- `clickycli-build` currently succeeds
+- `clickycli-test` currently fails in the menu bar app UI-test runner
+- logs and result bundles are written under `build/logs/codex/`
+
+Useful artifacts:
+
+- `build/logs/codex/build.log`
+- `build/logs/codex/build.xcresult`
+- `build/logs/codex/test.log`
+- `build/logs/codex/test.xcresult`
+
+## Project Layout
+
+```text
+leanring-buddy/
+  CompanionManager.swift
+  CompanionPanelView.swift
+  OverlayWindow.swift
+  BuddyDictationManager.swift
+  BuddyTranscriptionProvider.swift
+  OpenAIAudioTranscriptionProvider.swift
+  AssemblyAIStreamingTranscriptionProvider.swift
+  Providers/
+    Chat/
+    Automation/
+    Grounding/
+worker/
+  src/index.ts
+Makefile.clickycli
+AGENTS.md
+```
+
+## Security Notes
+
+- If `OpenAIAPIKey` is stored in `leanring-buddy/Info.plist`, treat that as local-only.
+- Do not commit a real API key in the repo.
+- Do not ship a public DMG with an embedded shared key unless you accept that the key can be extracted.
+
+## Current Architecture
+
+At a high level:
+
+- push-to-talk captures microphone audio
+- transcription provider turns audio into text
+- screen capture grabs one or more screenshots
+- chat provider generates a spoken answer
+- grounding provider tries to locate the relevant UI target
+- overlay animates the cursor to the target
+- TTS speaks the result
+
+The key architectural direction in this repo is:
+
+- native macOS tooling first
+- vision fallback second
+
+## Feedback
+
+If you are hacking on this locally and want the full internal architecture details, read [AGENTS.md](AGENTS.md).

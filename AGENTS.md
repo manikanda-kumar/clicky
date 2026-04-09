@@ -5,27 +5,25 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
-
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to the assistant. The default assistant path still uses Claude through the worker proxy, but local testing can now fall back to direct OpenAI chat plus system TTS when the worker is not configured. Grounding is provider-based: native macOS accessibility first, OpenAI computer use as a fallback, and `[POINT:x,y:label]` tags as a final fallback. A blue cursor overlay can fly to and point at UI elements the assistant references on any connected monitor.
 
 ## Architecture
 
 - **App Type**: Menu bar-only (`LSUIElement=true`), no dock icon or main window
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
-- **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
-- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
+- **AI Chat**: Provider abstraction with Claude via Cloudflare Worker proxy by default, plus direct OpenAI fallback for local testing when `OpenAIAPIKey` is configured and the worker is not
+- **Speech-to-Text**: The checked-in app bundle defaults to OpenAI transcription (`gpt-4o-transcribe`) for local development. AssemblyAI real-time streaming (`u3-rt-pro` model) remains available when `AssemblyAITokenProxyURL` is configured, with Apple Speech as a fallback.
+- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy, with local macOS system speech fallback when the worker is unavailable
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
-- **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
+- **Element Pointing**: Native macOS accessibility inspection runs first, OpenAI computer use can provide screenshot-based fallback grounding, and Claude-style `[POINT:x,y:label:screenN]` tags remain the final fallback. The overlay parses grounded coordinates, maps them to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
 - **Analytics**: PostHog via `ClickyAnalytics.swift`
 
 ### API Proxy (Cloudflare Worker)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+Most external requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the Claude, ElevenLabs, and AssemblyAI keys as secrets. OpenAI chat, transcription, and OpenAI computer-use fallback calls can be made directly from the app via bundle configuration keys or matching environment variables during local development.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
@@ -53,7 +51,7 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~984 | Central state machine. Owns dictation, shortcut monitoring, screen capture, assistant and grounding orchestration, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → assistant → grounding → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
@@ -70,10 +68,26 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 | `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
 | `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
+| `Providers/Chat/ClickyChatProvider.swift` | ~20 | Shared assistant chat provider protocol used by the orchestration layer. |
+| `Providers/Chat/ClaudeWorkerChatProvider.swift` | ~39 | Claude-backed chat provider that routes through the worker proxy. |
+| `Providers/Chat/OpenAIChatProvider.swift` | ~52 | Direct OpenAI chat provider used for local development when the worker chat route is not configured. |
+| `Providers/Automation/ClickyAutomationTypes.swift` | ~35 | Read-only automation snapshot types used by native grounding. |
+| `Providers/Automation/NativeMacOSAutomationProvider.swift` | ~148 | Accessibility-backed inspection of frontmost app, focused UI element, and menu items. |
+| `Providers/Grounding/ClickyGroundingTypes.swift` | ~34 | Shared grounding request/result types for transcript + assistant response matching. |
+| `Providers/Grounding/GroundingCoordinator.swift` | ~36 | Tries native macOS grounding first, then OpenAI computer use, then point-tag fallback. |
+| `Providers/Grounding/NativeMacOSGroundingProvider.swift` | ~225 | Scores accessibility candidates and maps native frames back into screenshot coordinates. |
+| `Providers/Grounding/OpenAIComputerUseGroundingProvider.swift` | ~213 | Screenshot-based fallback grounding using OpenAI computer use, without executing actions. |
+| `Providers/Grounding/PointTagGroundingProvider.swift` | ~63 | Parses the legacy `[POINT:...]` response tag format. |
+| `SystemTTSClient.swift` | ~31 | Local macOS speech-synthesis fallback used when ElevenLabs is unavailable during development. |
+| `Makefile.clickycli` | ~154 | Namespaced xcode-makefiles entry point for CLI diagnose/build/test flows without colliding with repo-level Make targets. |
+| `scripts/clickycli/create_dmg.sh` | ~67 | Packages a built macOS app bundle into a simple DMG with an `Applications` shortcut for local installs. |
+| `scripts/clickycli/install_app_bundle.sh` | ~61 | Copies the resolved built app bundle into an install directory, defaulting to `~/Applications` when used through the make target. |
+| `scripts/clickycli/resolve_built_app_path.sh` | ~56 | Resolves the actual built `.app` path from Xcode products so run/packaging targets do not rely on the scheme name matching the bundle name. |
+| `scripts/clickycli/xcbuild.sh` | ~104 | Wrapper around `xcodebuild` that isolates logs, result bundles, caches, and per-agent temp directories for CLI validation. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
-| `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
+| `AppBundleConfiguration.swift` | ~62 | Runtime configuration reader for Info.plist values plus local-development environment variable overrides. |
 | `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
 
 ## Build & Run
@@ -84,11 +98,32 @@ open leanring-buddy.xcodeproj
 
 # Select the leanring-buddy scheme, set signing team, Cmd+R to build and run
 
+# CLI validation via the namespaced xcode-makefiles toolkit
+AGENT_NAME=codex make -f Makefile.clickycli clickycli-diagnose
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-build
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install
+AGENT_NAME=codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-test
+
+# Local OpenAI-only testing from a terminal-launched app
+export OPENAI_API_KEY=...
+export CLICKY_VOICE_TRANSCRIPTION_PROVIDER=openai
+
+# If you launch from Xcode.app instead of a terminal, add OPENAI_API_KEY
+# to the scheme's Run > Arguments > Environment Variables.
+
+# Release DMG packaging
+AGENT_NAME=codex CONFIGURATION=Release TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-dmg
+
+# Direct local install without Xcode
+AGENT_NAME=codex INSTALL_DIR=$(pwd)/build/install/codex TREAT_WARNINGS_AS_ERRORS=NO make -f Makefile.clickycli clickycli-install
+
 # Known non-blocking warnings: Swift 6 concurrency warnings,
 # deprecated onChange warning in OverlayWindow.swift. Do NOT attempt to fix these.
 ```
 
 **Do NOT run `xcodebuild` from the terminal** — it invalidates TCC (Transparency, Consent, and Control) permissions and the app will need to re-request screen recording, accessibility, etc.
+Use the generated `Makefile.clickycli` targets instead if you need a terminal-driven validation pass.
 
 ## Cloudflare Worker
 
